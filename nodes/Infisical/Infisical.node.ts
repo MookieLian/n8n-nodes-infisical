@@ -42,7 +42,11 @@ export class Infisical implements INodeType {
 			baseURL,
 			headers: {
 				Accept: 'application/json',
-				'Content-Type': 'application/json',
+				// NOTE: Content-Type is intentionally NOT set here. n8n adds
+				// `content-type: application/json` automatically for requests that carry a
+				// body (create/update). Forcing it globally also attached it to bodyless
+				// requests (e.g. DELETE), where Infisical's Fastify backend tries to parse an
+				// empty JSON body and fails with a 500 "Something went wrong".
 			},
 		},
 		properties: [

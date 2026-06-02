@@ -1,7 +1,36 @@
-import type { INodeProperties } from 'n8n-workflow';
+import type {
+	IExecuteSingleFunctions,
+	IHttpRequestOptions,
+	INodeProperties,
+} from 'n8n-workflow';
 import { projectIdPathField } from '../../shared/descriptions';
+import { infisicalApiRequest } from '../../shared/transport';
 
 const showForProject = { resource: ['project'] };
+
+// Infisical sets `hasDeleteProtection` to true on every project by default, and a
+// DELETE against a protected project fails server-side with an HTTP 500. When the
+// "Disable Delete Protection" option is enabled, turn protection off via PATCH
+// immediately before the delete request is sent.
+async function disableDeleteProtectionBeforeDelete(
+	this: IExecuteSingleFunctions,
+	requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	const disable = this.getNodeParameter('disableDeleteProtection', true) as boolean;
+	if (disable) {
+		const projectId = this.getNodeParameter('projectId', undefined, {
+			extractValue: true,
+		}) as string;
+		await infisicalApiRequest.call(
+			this,
+			'PATCH',
+			`/api/v1/projects/${projectId}`,
+			{},
+			{ hasDeleteProtection: false },
+		);
+	}
+	return requestOptions;
+}
 
 export const projectDescription: INodeProperties[] = [
 	{
@@ -27,6 +56,7 @@ export const projectDescription: INodeProperties[] = [
 				action: 'Delete a project',
 				description: 'Delete a project',
 				routing: {
+					send: { preSend: [disableDeleteProtectionBeforeDelete] },
 					request: { method: 'DELETE', url: '=/api/v1/projects/{{ $parameter.projectId }}' },
 					output: { postReceive: [{ type: 'rootProperty', properties: { property: 'project' } }] },
 				},
@@ -66,6 +96,16 @@ export const projectDescription: INodeProperties[] = [
 	},
 
 	projectIdPathField({ ...showForProject, operation: ['get', 'update', 'delete'] }),
+
+	{
+		displayName: 'Disable Delete Protection',
+		name: 'disableDeleteProtection',
+		type: 'boolean',
+		default: true,
+		displayOptions: { show: { ...showForProject, operation: ['delete'] } },
+		description:
+			"Whether to automatically turn off the project's delete protection before deleting. Infisical enables delete protection on every project by default, and deletion fails with an HTTP 500 error while it is enabled. Disable this only if you have already turned protection off manually.",
+	},
 
 	{
 		displayName: 'Project Name',
