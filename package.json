@@ -3,7 +3,7 @@
 	"version": "0.1.1",
 	"description": "n8n community node for the Infisical API - manage secrets, folders, projects, environments, dynamic secrets and more",
 	"license": "MIT",
-	"homepage": "https://github.com/mookielianhd/n8n-nodes-infisical#readme",
+	"homepage": "https://github.com/MookieLian/n8n-nodes-infisical#readme",
 	"keywords": [
 		"n8n-community-node-package",
 		"n8n",
@@ -17,7 +17,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/mookielianhd/n8n-nodes-infisical.git"
+		"url": "git+https://github.com/MookieLian/n8n-nodes-infisical.git"
 	},
 	"scripts": {
 		"build": "n8n-node build",
