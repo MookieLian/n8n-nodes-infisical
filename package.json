@@ -1,6 +1,6 @@
 {
 	"name": "@mookielianhd/n8n-nodes-infisical",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "n8n community node for the Infisical API - manage secrets, folders, projects, environments, dynamic secrets and more",
 	"license": "MIT",
 	"homepage": "https://github.com/mookielianhd/n8n-nodes-infisical#readme",
