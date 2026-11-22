@@ -1,10 +1,9 @@
 import type {
-	IAuthenticateGeneric,
+	IAuthenticate,
 	Icon,
 	ICredentialDataDecryptedObject,
 	ICredentialTestRequest,
 	ICredentialType,
-	IHttpRequestHelper,
 	INodeProperties,
 } from 'n8n-workflow';
 
@@ -12,6 +11,56 @@ import type {
 // Shared by the credential test request and the node's requestDefaults.
 export const resolvedBaseUrl =
 	'={{$credentials.region === "custom" ? $credentials.customBaseUrl : $credentials.region}}';
+
+// Refresh this long before the token's real expiry to avoid sending a token that expires in flight.
+const TOKEN_EXPIRY_MARGIN_MS = 60_000;
+// Used when the login response carries no usable `expiresIn`.
+const DEFAULT_TOKEN_TTL_S = 60;
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const inflightLogins = new Map<string, Promise<string>>();
+
+function getCredentialBaseUrl(credentials: ICredentialDataDecryptedObject): string {
+	return (
+		credentials.region === 'custom'
+			? (credentials.customBaseUrl as string)
+			: (credentials.region as string)
+	).replace(/\/$/, '');
+}
+
+async function getAccessToken(credentials: ICredentialDataDecryptedObject): Promise<string> {
+	const baseUrl = getCredentialBaseUrl(credentials);
+	const clientId = credentials.clientId as string;
+	const clientSecret = credentials.clientSecret as string;
+	// The secret is part of the key so that rotating it takes effect immediately.
+	const key = JSON.stringify([baseUrl, clientId, clientSecret]);
+
+	const cached = tokenCache.get(key);
+	if (cached && cached.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()) return cached.token;
+
+	let login = inflightLogins.get(key);
+	if (!login) {
+		login = (async () => {
+			const response = await fetch(`${baseUrl}/api/v1/auth/universal-auth/login`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+				body: JSON.stringify({ clientId, clientSecret }),
+			});
+			if (!response.ok) {
+				throw new Error(
+					`Infisical Universal Auth login failed (HTTP ${response.status}): ${await response.text()}`,
+				);
+			}
+			const data = (await response.json()) as { accessToken?: string; expiresIn?: number };
+			if (!data.accessToken) throw new Error('Infisical login response contained no accessToken');
+			const ttl = typeof data.expiresIn === 'number' && data.expiresIn > 0 ? data.expiresIn : DEFAULT_TOKEN_TTL_S;
+			tokenCache.set(key, { token: data.accessToken, expiresAt: Date.now() + ttl * 1000 });
+			return data.accessToken;
+		})().finally(() => inflightLogins.delete(key));
+		inflightLogins.set(key, login);
+	}
+	return await login;
+}
 
 export class InfisicalApi implements ICredentialType {
 	name = 'infisicalApi';
@@ -74,50 +123,20 @@ export class InfisicalApi implements ICredentialType {
 			required: true,
 			description: 'The Client Secret of the machine identity Universal Auth credential',
 		},
-		{
-			// Populated at runtime by preAuthentication; never shown to the user.
-			// `expirable: true` is REQUIRED — n8n only invokes preAuthentication when the
-			// credential has a hidden property flagged expirable (see n8n CredentialsHelper).
-			// Without it, the token exchange is skipped and requests are sent with an empty
-			// Bearer token, which Infisical rejects with 403 "jwt must be provided".
-			// `password: true` satisfies the @n8n/community-nodes/credential-password-field
-			// lint rule (accessToken is a sensitive value); it coexists with expirable.
-			displayName: 'Access Token',
-			name: 'accessToken',
-			type: 'hidden',
-			typeOptions: { expirable: true, password: true },
-			default: '',
-		},
 	];
 
-	// Exchange the Client ID/Secret for a short-lived access token (Universal Auth login).
-	// n8n caches the result and re-runs this automatically when a request returns 401.
-	async preAuthentication(this: IHttpRequestHelper, credentials: ICredentialDataDecryptedObject) {
-		const baseUrl = (
-			credentials.region === 'custom' ? (credentials.customBaseUrl as string) : (credentials.region as string)
-		).replace(/\/$/, '');
-
-		const response = (await this.helpers.httpRequest({
-			method: 'POST',
-			url: `${baseUrl}/api/v1/auth/universal-auth/login`,
-			body: {
-				clientId: credentials.clientId,
-				clientSecret: credentials.clientSecret,
-			},
-			headers: { 'Content-Type': 'application/json' },
-			json: true,
-		})) as { accessToken: string };
-
-		return { accessToken: response.accessToken };
-	}
-
-	authenticate: IAuthenticateGeneric = {
-		type: 'generic',
-		properties: {
-			headers: {
-				Authorization: '=Bearer {{$credentials.accessToken}}',
-			},
-		},
+	// Exchange the Client ID/Secret for a short-lived access token (Universal Auth login)
+	// on demand. The token is cached in memory (never persisted to the credential) together
+	// with its expiry, and is re-requested shortly before it expires.
+	//
+	// Why not n8n's `expirable` + `preAuthentication` mechanism: n8n only re-runs
+	// preAuthentication when a request fails with 401, but Infisical answers an expired access
+	// token with 403 (TokenError), and the declarative routing used by this node cannot opt in to
+	// retrying on 403. The cached token then stays stale until the credential is re-created.
+	authenticate: IAuthenticate = async (credentials, requestOptions) => {
+		const accessToken = await getAccessToken(credentials);
+		requestOptions.headers = { ...requestOptions.headers, Authorization: `Bearer ${accessToken}` };
+		return requestOptions;
 	};
 
 	test: ICredentialTestRequest = {
